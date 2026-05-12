@@ -1164,6 +1164,12 @@
       editBtn.textContent = '✎';
       editBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleEditFields(i); });
       actions.appendChild(editBtn);
+      const delBtn = document.createElement('button');
+      delBtn.className = 'routine-action-btn';
+      delBtn.textContent = '🗑';
+      delBtn.style.color = 'var(--danger)';
+      delBtn.addEventListener('click', (e) => { e.stopPropagation(); deleteExercise(i); });
+      actions.appendChild(delBtn);
       item.appendChild(actions);
 
       container.appendChild(item);
@@ -1183,6 +1189,156 @@
       editFields.querySelector('[data-action="cancel"]').addEventListener('click', () => editFields.classList.remove('show'));
       container.appendChild(editFields);
     });
+
+    const addBtn = document.createElement('button');
+    addBtn.className = 'btn';
+    addBtn.style.cssText = 'width: 100%; padding: 14px; margin-top: 14px; border-style: dashed;';
+    addBtn.innerHTML = '<span style="font-size:16px; font-weight:800;">+</span> Add exercise';
+    addBtn.addEventListener('click', () => showAddForm());
+    container.appendChild(addBtn);
+
+    const addForm = document.createElement('div');
+    addForm.id = 'addExerciseForm';
+    addForm.className = 'edit-fields';
+    addForm.style.marginTop = '8px';
+    container.appendChild(addForm);
+  }
+
+  function deleteExercise(i) {
+    const ex = routine[i];
+    if (!confirm('Delete "' + ex.name + '"?')) return;
+    const isActive = (i === state.idx) && (state.mode !== 'idle' && state.mode !== 'done');
+    routine.splice(i, 1);
+    saveRoutine();
+    if (state.idx >= routine.length) state.idx = Math.max(0, routine.length - 1);
+    state.completedSets = {};
+    if (isActive) {
+      clearTick();
+      setMode('idle');
+      state.paused = false;
+      state.setNum = 1;
+      state.repNum = 0;
+      countEl.textContent = '—';
+      subEl.textContent = 'ready';
+      setEl.textContent = '';
+      fillEl.style.width = '0%';
+    }
+    buildRoutineList();
+    if (routine.length > 0) renderExercise();
+    else {
+      nameEl.textContent = 'No exercises';
+      metaEl.textContent = 'Add one from the Routine view';
+    }
+    showSaveToast('Deleted "' + ex.name + '"');
+  }
+
+  function getExistingPhases() {
+    const phases = [];
+    const seen = new Set();
+    routine.forEach(ex => {
+      if (!seen.has(ex.phase)) { seen.add(ex.phase); phases.push(ex.phase); }
+    });
+    return phases;
+  }
+
+  function showAddForm() {
+    const form = $('addExerciseForm');
+    if (form.classList.contains('show')) { form.classList.remove('show'); return; }
+    document.querySelectorAll('.edit-fields.show').forEach(f => f.classList.remove('show'));
+    const phases = getExistingPhases();
+    const phaseOptions = phases.map(p => '<option value="' + p.replace(/"/g, '&quot;') + '">' + p + '</option>').join('');
+    form.innerHTML = `
+      <div class="edit-row"><label>Name</label><input type="text" id="addName" placeholder="Exercise name" style="width: 180px; text-align: left;"></div>
+      <div class="edit-row"><label>Type</label>
+        <select id="addKind" style="width: 140px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 14px; font-family: inherit;">
+          <option value="reps">Reps</option>
+          <option value="hold">Hold</option>
+          <option value="hold_reps">Reps with hold</option>
+        </select>
+      </div>
+      <div class="edit-row"><label>Phase</label>
+        <select id="addPhase" style="width: 180px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit;">
+          ${phaseOptions}
+          <option value="__new__">+ New phase...</option>
+        </select>
+      </div>
+      <div class="edit-row" id="addNewPhaseRow" style="display:none;"><label>New phase name</label><input type="text" id="addNewPhase" placeholder="e.g. Phase 5: Cooldown" style="width: 180px; text-align: left;"></div>
+      <div class="edit-row"><label>Sets</label><input type="number" id="addSets" value="2" min="1" max="20"></div>
+      <div class="edit-row" id="addRepsRow"><label>Reps</label><input type="number" id="addReps" value="10" min="1" max="100"></div>
+      <div class="edit-row" id="addHoldRow" style="display:none;"><label>Hold (sec)</label><input type="number" id="addHold" value="15" min="1" max="300"></div>
+      <div class="edit-row" id="addTempoRow"><label>Tempo (sec/rep)</label><input type="number" id="addTempo" value="3" min="1" max="6"></div>
+      <div class="edit-row"><label>Rest between sets (sec)</label><input type="number" id="addRestBetween" value="10" min="0" max="300"></div>
+      <div class="edit-row"><label>Rest after exercise (sec)</label><input type="number" id="addRestAfter" value="30" min="0" max="600"></div>
+      <div class="edit-row"><label>Note (optional)</label><input type="text" id="addNote" placeholder="e.g. each side" style="width: 180px; text-align: left;"></div>
+      <div class="edit-row"><label>Insert at</label>
+        <select id="addPosition" style="width: 140px; background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit;">
+          <option value="phase_end">End of phase</option>
+          <option value="list_end">End of routine</option>
+        </select>
+      </div>
+      <div class="edit-buttons">
+        <button class="btn primary" id="addSaveBtn">Add</button>
+        <button class="btn" id="addCancelBtn">Cancel</button>
+      </div>
+    `;
+    form.classList.add('show');
+
+    const kindSel = $('addKind');
+    const updateFieldVisibility = () => {
+      const kind = kindSel.value;
+      $('addRepsRow').style.display = (kind === 'reps' || kind === 'hold_reps') ? 'flex' : 'none';
+      $('addHoldRow').style.display = (kind === 'hold' || kind === 'hold_reps') ? 'flex' : 'none';
+      $('addTempoRow').style.display = (kind === 'reps') ? 'flex' : 'none';
+    };
+    kindSel.addEventListener('change', updateFieldVisibility);
+    updateFieldVisibility();
+
+    const phaseSel = $('addPhase');
+    phaseSel.addEventListener('change', () => {
+      $('addNewPhaseRow').style.display = phaseSel.value === '__new__' ? 'flex' : 'none';
+    });
+
+    $('addSaveBtn').addEventListener('click', saveNewExercise);
+    $('addCancelBtn').addEventListener('click', () => form.classList.remove('show'));
+
+    setTimeout(() => $('addName').focus(), 100);
+  }
+
+  function saveNewExercise() {
+    const name = $('addName').value.trim();
+    if (!name) { showSaveToast('Name is required'); $('addName').focus(); return; }
+    const kind = $('addKind').value;
+    let phase = $('addPhase').value;
+    if (phase === '__new__') {
+      phase = $('addNewPhase').value.trim();
+      if (!phase) { showSaveToast('Phase name is required'); $('addNewPhase').focus(); return; }
+    }
+    const sets = parseInt($('addSets').value, 10) || 1;
+    const restBetween = parseInt($('addRestBetween').value, 10) || 0;
+    const restAfter = parseInt($('addRestAfter').value, 10) || 0;
+    const note = $('addNote').value.trim();
+    const position = $('addPosition').value;
+
+    const ex = { phase: phase, name: name, kind: kind, sets: sets, restBetween: restBetween, restAfter: restAfter };
+    if (kind === 'reps' || kind === 'hold_reps') ex.reps = parseInt($('addReps').value, 10) || 10;
+    if (kind === 'hold' || kind === 'hold_reps') ex.holdSec = parseInt($('addHold').value, 10) || 15;
+    if (kind === 'reps') ex.tempo = parseInt($('addTempo').value, 10) || 3;
+    if (note) ex.note = note;
+
+    let insertAt = routine.length;
+    if (position === 'phase_end') {
+      let lastInPhase = -1;
+      for (let i = 0; i < routine.length; i++) {
+        if (routine[i].phase === phase) lastInPhase = i;
+      }
+      if (lastInPhase >= 0) insertAt = lastInPhase + 1;
+    }
+
+    routine.splice(insertAt, 0, ex);
+    saveRoutine();
+    $('addExerciseForm').classList.remove('show');
+    buildRoutineList();
+    showSaveToast('Added "' + name + '"');
   }
 
   function toggleEditFields(i) {
