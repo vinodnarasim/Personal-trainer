@@ -411,6 +411,14 @@
         </select>
         <div class="settings-hint">If voice often misfires, try switching this.</div>
       </div>
+      <div class="settings-section">
+        <div class="settings-label">Trainer voice</div>
+        <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; padding: 6px 0;">
+          <input type="checkbox" id="settingsMuted" style="width: 18px; height: 18px;">
+          <span style="font-size: 14px; color: var(--text);">Mute trainer voice (silent mode)</span>
+        </label>
+        <div class="settings-hint">Stops counting, phase announcements, and "got it" responses. The mic still listens for your commands.</div>
+      </div>
       <div class="edit-buttons">
         <button class="btn primary" id="settingsSave">Save</button>
         <button class="btn" data-close="settingsSheet">Cancel</button>
@@ -556,6 +564,7 @@
 
   function speak(text, opts) {
     opts = opts || {};
+    if (settings && settings.muted) return;
     if (!('speechSynthesis' in window)) return;
     try {
       const u = new SpeechSynthesisUtterance(text);
@@ -870,7 +879,12 @@
     return base > 0 ? base : null;
   }
 
-  function looksLikeFollowUp() { return (Date.now() - state.lastWakeAt) < 4000; }
+  function looksLikeFollowUp() { return (Date.now() - state.lastWakeAt) < 5000; }
+  function isWorkoutActive() {
+    return state.mode === 'hold' || state.mode === 'reps' || state.mode === 'hold_reps' ||
+           state.mode === 'rest' || state.mode === 'restBetween' || state.mode === 'countdown' ||
+           state.paused;
+  }
 
   function showMatched(label, ok) {
     matchedEl.textContent = ok ? '→ ' + label : '✗ no match';
@@ -895,7 +909,8 @@
       return false;
     }
     const hasWake = WAKE_RE.test(t);
-    if (!hasWake && !looksLikeFollowUp()) {
+    const workoutActive = isWorkoutActive();
+    if (!hasWake && !looksLikeFollowUp() && !workoutActive) {
       return false;
     }
 
@@ -944,16 +959,10 @@
     if (!matched && /\b(back|previous|prev|prep|press|pretty|last|earlier|before|backward)\b/.test(t)) {
       prevExercise(); matched = true; label = 'previous';
     }
-    if (!matched && /\b(repeat|again|redo|restart|once more|one more time)\b/.test(t)) {
-      clearTick();
-      state.setNum = 1; state.repNum = 0;
-      renderExercise(); startCountdown();
-      matched = true; label = 'repeat';
-    }
     if (!matched && /\b(status|how long|how much|where|what.?s left|remaining|time left|how many)\b/.test(t)) {
       speakStatus(); matched = true; label = 'status';
     }
-    if (!matched && /\b(done|finish|finished|end|quit|enough|that.?s it)\b/.test(t)) {
+    if (!matched && hasWake && /\b(done|finish|finished|end|quit|enough|that.?s it)\b/.test(t)) {
       clearTick();
       setMode('done');
       countEl.textContent = '✓'; subEl.textContent = 'ended early';
@@ -961,13 +970,20 @@
       releaseWakeLock();
       matched = true; label = 'end workout';
     }
-    if (!matched && /\b(start|begin|let.?s go|kick off|fire it up)\b/.test(t)) {
+    if (!matched && hasWake && /\b(start|begin|let.?s go|kick off|fire it up)\b/.test(t)) {
       beginWorkout(); matched = true; label = 'start';
+    }
+    if (!matched && hasWake && /\b(repeat|again|redo|restart|once more|one more time)\b/.test(t)) {
+      clearTick();
+      state.setNum = 1; state.repNum = 0;
+      renderExercise(); startCountdown();
+      matched = true; label = 'repeat';
     }
 
     if (matched) { state.lastWakeAt = Date.now(); showMatched(label, true); }
-    else if (hasWake) showMatched('wake ok, command not understood', false);
-    else showMatched('wake word not heard', false);
+    else if (hasWake) showMatched('heard ' + (settings ? settings.name : 'wake') + ', no command match', false);
+    else if (workoutActive) showMatched('no command match', false);
+    else showMatched('say ' + (settings ? settings.name : 'wake') + ' first', false);
     return matched;
   }
 
@@ -997,15 +1013,15 @@
     state.watchdogId = setInterval(() => {
       if (!state.micWanted) return;
       const elapsed = Date.now() - state.lastRecogActivity;
-      if (elapsed > 30000) setRecogHealth('bad');
-      else if (elapsed > 18000) setRecogHealth('warn');
-      else setRecogHealth('ok');
-    }, 2000);
-    state.refreshId = setInterval(() => {
-      if (state.micWanted && state.recog) {
-        try { state.recog.stop(); } catch (e) {}
+      if (elapsed > 60000) {
+        setRecogHealth('bad');
+        try { state.recog && state.recog.abort(); } catch (e) {}
+      } else if (elapsed > 35000) {
+        setRecogHealth('warn');
+      } else {
+        setRecogHealth('ok');
       }
-    }, 50000);
+    }, 3000);
   }
   function stopWatchdog() {
     if (state.watchdogId) { clearInterval(state.watchdogId); state.watchdogId = null; }
@@ -1036,15 +1052,38 @@
         stopWatchdog();
       }
     };
+    let restartCount = 0;
+    let lastResultAt = Date.now();
+    r.onresult = (e) => {
+      state.lastRecogActivity = Date.now();
+      lastResultAt = Date.now();
+      restartCount = 0;
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) handleVoice(e.results[i][0].transcript);
+      }
+    };
     r.onend = () => {
       state.listening = false;
       if (state.micWanted) {
+        const sinceResult = Date.now() - lastResultAt;
+        let delay;
+        if (sinceResult < 4000) {
+          delay = 400;
+          restartCount = 0;
+        } else if (sinceResult < 15000) {
+          delay = 4000;
+          restartCount++;
+        } else {
+          delay = 8000;
+          restartCount++;
+        }
+        if (restartCount > 10) delay = 15000;
         setTimeout(() => {
           if (state.micWanted) {
             try { r.start(); state.listening = true; state.lastRecogActivity = Date.now(); }
-            catch (e) { setTimeout(() => { if (state.micWanted) { try { r.start(); state.listening = true; state.lastRecogActivity = Date.now(); } catch(e2) {} } }, 800); }
+            catch (e) { setTimeout(() => { if (state.micWanted) { try { r.start(); state.listening = true; state.lastRecogActivity = Date.now(); } catch(e2) {} } }, 1500); }
           }
-        }, 200);
+        }, delay);
       } else { setRecogHealth('idle'); }
     };
     state.recog = r;
@@ -1153,15 +1192,51 @@
   }
   function saveEditFields(i) {
     const el = $('edit-fields-' + i);
+    let changes = 0;
     el.querySelectorAll('input').forEach(input => {
       const field = input.dataset.field;
       const val = parseInt(input.value, 10);
-      if (!isNaN(val)) routine[i][field] = val;
+      if (!isNaN(val) && routine[i][field] !== val) {
+        routine[i][field] = val;
+        changes++;
+      }
     });
     saveRoutine();
+    try {
+      const verify = JSON.parse(localStorage.getItem(STORAGE_KEY));
+      if (!verify || verify[i][el.querySelectorAll('input')[0].dataset.field] !== routine[i][el.querySelectorAll('input')[0].dataset.field]) {
+        showSaveToast('Save failed — storage may be blocked');
+        return;
+      }
+    } catch (e) {
+      showSaveToast('Save failed: ' + e.message);
+      return;
+    }
     el.classList.remove('show');
     buildRoutineList();
     if (i === state.idx) renderExercise();
+    showSaveToast(changes > 0 ? 'Saved ' + changes + ' change' + (changes > 1 ? 's' : '') : 'No changes');
+  }
+
+  function showSaveToast(msg) {
+    let toast = $('saveToast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'saveToast';
+      toast.style.cssText = 'position: absolute; top: 70px; left: 50%; transform: translateX(-50%); background: var(--success); color: #0f1115; padding: 8px 16px; border-radius: 999px; font-size: 13px; font-weight: 600; z-index: 100; opacity: 0; transition: opacity 0.2s; pointer-events: none; white-space: nowrap; max-width: 90vw;';
+      document.body.appendChild(toast);
+    }
+    if (msg.indexOf('fail') >= 0 || msg.indexOf('error') >= 0) {
+      toast.style.background = 'var(--danger)';
+      toast.style.color = 'white';
+    } else {
+      toast.style.background = 'var(--success)';
+      toast.style.color = '#0f1115';
+    }
+    toast.textContent = msg;
+    toast.style.opacity = '1';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2200);
   }
 
   function openSheet(id) { $(id).classList.add('show'); }
@@ -1224,6 +1299,7 @@
     $('settingsName').value = settings.name;
     $('settingsExtra').value = (settings.extraVariants || []).join(', ');
     $('settingsLang').value = settings.lang || 'en-IN';
+    $('settingsMuted').checked = !!settings.muted;
     renderVariantChips($('settingsVariants'), settings.name, settings.extraVariants || []);
     const updateChips = () => {
       const extras = $('settingsExtra').value.split(',').map(s => s.trim()).filter(Boolean);
@@ -1242,6 +1318,7 @@
     settings.name = name;
     settings.extraVariants = extras;
     settings.lang = lang;
+    settings.muted = $('settingsMuted').checked;
     saveSettings();
     applySettingsToUI();
     closeSheet('settingsSheet');
@@ -1264,11 +1341,22 @@
     if (confirm('Reset workout and clear all exercise edits?')) reset(true);
     else reset(false);
   });
+  function hasOpenUnsavedEdits() {
+    const openEdits = document.querySelectorAll('.edit-fields.show');
+    return openEdits.length > 0;
+  }
+  function closeSheetWithCheck(id) {
+    if (id === 'routineSheet' && hasOpenUnsavedEdits()) {
+      if (!confirm('You have unsaved edits open. Close anyway? Changes will be lost.')) return;
+      document.querySelectorAll('.edit-fields.show').forEach(el => el.classList.remove('show'));
+    }
+    closeSheet(id);
+  }
   document.querySelectorAll('[data-close]').forEach(b => {
-    b.addEventListener('click', () => closeSheet(b.dataset.close));
+    b.addEventListener('click', () => closeSheetWithCheck(b.dataset.close));
   });
   document.querySelectorAll('.sheet-overlay').forEach(o => {
-    o.addEventListener('click', (e) => { if (e.target === o) closeSheet(o.id); });
+    o.addEventListener('click', (e) => { if (e.target === o) closeSheetWithCheck(o.id); });
   });
   micPill.addEventListener('click', toggleMic);
   stallBanner.addEventListener('click', forceRestartMic);
