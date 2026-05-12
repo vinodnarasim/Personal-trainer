@@ -1371,6 +1371,8 @@
   if (!settings) {
     showOnboard();
   } else {
+    $('onboardScreen').classList.add('hidden');
+    $('appScreen').style.display = 'flex';
     applySettingsToUI();
     renderExercise();
     setMode('idle');
