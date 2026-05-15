@@ -763,12 +763,16 @@
 
   function jumpTo(idx) {
     clearTick();
-    state.idx = idx; state.setNum = 1; state.repNum = 0;
-    renderExercise(); setMode('idle');
-    countEl.textContent = '—'; subEl.textContent = 'ready'; setEl.textContent = '';
-    fillEl.style.width = '0%';
+    state.idx = idx;
+    state.setNum = 1;
+    state.repNum = 0;
+    state.paused = false;
+    timerArea.classList.remove('paused');
+    renderExercise();
     closeSheet('routineSheet');
-    speak(routine[idx].name);
+    acquireWakeLock();
+    announceExercise();
+    setTimeout(startCountdown, 2400);
   }
 
   function pauseToggle() {
