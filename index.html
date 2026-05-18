@@ -725,10 +725,23 @@
     setEl.textContent = '';
     countEl.textContent = String(seconds);
     speak('Rest ' + seconds + ' seconds');
+
+    const isInterExercise = (modeName !== 'restBetween');
+    const nextIdx = state.idx + 1;
+    const hasNextExercise = nextIdx < routine.length;
+    const shouldAnnouncePrep = isInterExercise && hasNextExercise && seconds >= 12;
+    const prepTriggerAt = shouldAnnouncePrep ? Math.max(4, seconds - 8) : -1;
+    let prepAnnounced = false;
+
     state.tickId = setInterval(() => {
       if (state.paused) return;
       state.secLeft -= 1; updateProgress();
       countEl.textContent = String(Math.max(0, state.secLeft));
+      if (!prepAnnounced && prepTriggerAt > 0 && state.secLeft === prepTriggerAt) {
+        prepAnnounced = true;
+        const nextEx = routine[nextIdx];
+        speak('Coming up next: ' + nextEx.name + (nextEx.note ? '. ' + nextEx.note : ''));
+      }
       if (state.secLeft === 3) speak('3, 2, 1');
       if (state.secLeft <= 0) {
         clearTick();
